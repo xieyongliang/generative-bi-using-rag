@@ -1,13 +1,24 @@
 import json
 import traceback
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, status, Depends
 import logging
 from nlq.business.profile import ProfileManagement
 from .enum import ContentEnum
-from .schemas import Question, Answer, Option, CustomQuestion, FeedBackInput
+from .schemas import Question, Answer, Option, CustomQuestion, FeedBackInput, UserOut, UserAuth, TokenSchema, SystemUser
 from . import service
 from nlq.business.nlq_chain import NLQChain
 from dotenv import load_dotenv
+
+from fastapi.security import OAuth2PasswordRequestForm
+from .utils import (
+    get_hashed_password,
+    create_access_token,
+    create_refresh_token,
+    verify_password
+)
+from .deps import get_current_user
+from replit import db
+from uuid import uuid4
 
 from .service import ask_websocket
 
@@ -15,6 +26,48 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/qa", tags=["qa"])
 load_dotenv()
 
+@router.post('/signup', summary="Create new user", response_model=UserOut)
+async def create_user(data: UserAuth):
+    # querying database to check if user already exist
+    user = db.get(data.email, None)
+    if user is not None:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exist"
+        )
+    user = {
+        'email': data.email,
+        'password': get_hashed_password(data.password),
+        'id': str(uuid4())
+    }
+    db[data.email] = user    # saving user to database
+    return user
+
+
+@router.post('/login', summary="Create access and refresh tokens for user", response_model=TokenSchema)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = db.get(form_data.username, None)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect email or password"
+        )
+
+    hashed_pass = user['password']
+    if not verify_password(form_data.password, hashed_pass):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect email or password"
+        )
+
+    return {
+        "access_token": create_access_token(user['email']),
+        "refresh_token": create_refresh_token(user['email']),
+    }
+
+@router.get('/me', summary='Get details of currently logged in user', response_model=UserOut)
+async def get_me(user: SystemUser = Depends(get_current_user)):
+    return user
 
 @router.get("/option", response_model=Option)
 def option():
